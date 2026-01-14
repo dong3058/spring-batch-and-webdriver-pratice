@@ -1,0 +1,21 @@
+spring:
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: never
+  datasource:
+    url: jdbc:mysql://localhost:3306/rusttest
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: 1234
+  jpa:
+    hibernate:
+      ddl-auto: update
+      database-platform: org.hibernate.dialect.MySQL8Dialect
+    open-in-view: false
+    properties:
+      hibernate:
+        default_batch_fetch_size: 100
+        jdbc:
+          exception-handling: ignore
