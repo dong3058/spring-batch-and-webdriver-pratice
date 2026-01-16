@@ -8,6 +8,7 @@ import org.jsoup.nodes.Document;
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.slf4j.Logger;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
@@ -62,10 +63,14 @@ public class TestController {
     @GetMapping("/batch/run/range")
     public String rangePartitionJob() {
         try {
+            log.info("current mvc thread name:{}",Thread.currentThread().getName());
+            log.info("current mvc thread is virtual?:{}",Thread.currentThread().isVirtual());
+
             JobParameters jobParameters = new JobParametersBuilder()
                     .addLong("id", System.currentTimeMillis())
                     .toJobParameters();
-
+            //job을 Job 이름 + Job Parameter 로 1개의 인스턴스를 구분 즉 같은 이름에 같은 데이터로 구성된 파라미터는
+            //같은 job인스턴스로 본다 이말.
             jobOperator.start(rangePartitionJob, jobParameters);
             return "Batch Range Job Started";
         } catch (Exception e) {

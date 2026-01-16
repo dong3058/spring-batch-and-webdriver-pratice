@@ -1,4 +1,17 @@
 spring:
+  threads:
+    virtual:
+      enabled: true
+
+
+#virtual 스레드 설정값. 아래의 concurreny limit은 들어온 요청에대해서 즉각 생성하는 가상 스레드의 최대갯수를 의미.
+        #만약 저값이상으로 요청이들ㅇ어오면 실행중인 가상 스레드가 해재될떄까지 대기.
+        #가상 스레드는 비동기하고는 관련이없는 확장성에 관련된 내용일뿐(기존의 io타임으로 스레드가 정지되서 자원이 낭비되는걸 막는)이다.
+        #js or rust의 이벤트 루프를 구현한거라고 보면된다.
+  #task:
+   # execution:
+    #  simple:
+       # concurrency-limit: 5
   batch:
     job:
       enabled: false

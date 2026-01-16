@@ -59,8 +59,10 @@ public class BatchTestConfig {
    @Bean(name="asyncTaskExe")
     public SimpleAsyncTaskExecutor asyncTestExecutor(){
         SimpleAsyncTaskExecutor asyncTaskExecutor = new SimpleAsyncTaskExecutor();
-        asyncTaskExecutor.setConcurrencyLimit(5);
-        asyncTaskExecutor.setThreadNamePrefix("async-thread-pool-");
+        asyncTaskExecutor.setVirtualThreads(true);
+
+        //asyncTaskExecutor.setConcurrencyLimit(5);
+        asyncTaskExecutor.setThreadNamePrefix("virtual-thread-pool-");
         return asyncTaskExecutor;
     }
 
@@ -68,7 +70,7 @@ public class BatchTestConfig {
     public PartitionHandler partitionHandler(){
 
         val partitionHandler = new TaskExecutorPartitionHandler();
-        partitionHandler.setTaskExecutor(executor());
+        partitionHandler.setTaskExecutor(asyncTestExecutor());
         partitionHandler.setStep(rangeSlaveStep());
         partitionHandler.setGridSize(4);
         return partitionHandler;

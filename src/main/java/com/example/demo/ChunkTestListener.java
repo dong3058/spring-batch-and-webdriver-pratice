@@ -16,6 +16,7 @@ public class ChunkTestListener implements ChunkListener {
     @Override
     public void afterChunk(Chunk chunk) {
         log.info("thread name:{}",Thread.currentThread().getName());
+        log.info("current chunk thead is virtual?:{}",Thread.currentThread().isVirtual());
         log.info("청크 단위 작업 종료");
     }
 
