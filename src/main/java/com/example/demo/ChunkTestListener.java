@@ -1,27 +1,27 @@
 package com.example.demo;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.batch.core.listener.ChunkListener;
+import org.springframework.batch.core.listener.ItemWriteListener;
+import org.springframework.batch.core.listener.StepExecutionListener;
+import org.springframework.batch.core.listener.StepListener;
+import org.springframework.batch.core.step.StepExecution;
 import org.springframework.batch.infrastructure.item.Chunk;
 
 
 @Slf4j
-public class ChunkTestListener implements ChunkListener {
+public class ChunkTestListener implements StepExecutionListener {
+
 
     @Override
-    public void beforeChunk(Chunk chunk) {
-        log.info("청크 단위 작업 시작");
-    }
+    public void beforeStep(StepExecution stepExecution) {
 
-    @Override
-    public void afterChunk(Chunk chunk) {
-        log.info("thread name:{}",Thread.currentThread().getName());
+       log.info("stepName:{}",stepExecution.getStepName());
+        /*log.info("thread name:{}",Thread.currentThread().getName());
+        log.info("작업사이즈:{}",items.getItems().size());
         log.info("current chunk thead is virtual?:{}",Thread.currentThread().isVirtual());
-        log.info("청크 단위 작업 종료");
+        log.info("청크 단위 작업 종료");*/
+
     }
 
-    @Override
-    public void onChunkError(Exception exception, Chunk chunk) {
-        log.info("청크 작업중 에러발생:{}",exception.getMessage());
-    }
+
 }

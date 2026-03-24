@@ -24,6 +24,7 @@ public class IdRangePartition implements Partitioner {
         Map<String,ExecutionContext> partitions = new HashMap<>();
 
         for (int i=0;gridSize>i;i++) {
+            //이 context는 각 substep별로 들어갈 context를 의미한다.
             ExecutionContext context =new ExecutionContext();
             long startId = i * partitionSize + 1;
             long endId = (i == gridSize - 1) ? totCount:  (i + 1) * partitionSize ;
