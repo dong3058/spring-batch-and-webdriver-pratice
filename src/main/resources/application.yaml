@@ -18,8 +18,6 @@ spring:
       enabled: false
     jdbc:
       initialize-schema: never
-    repository:
-      type: jdbc
   datasource:
     url: jdbc:postgresql://localhost:5432/postgres
     username: postgres
