@@ -5,3 +5,9 @@ chunk 사이즈만큼 reader로 부터 데이터를 읽어냈따면 processor로
 참고로 reader에서주는 데이터는 Map<string,List<String>> 이런꼴을 1개씩 줄수도있다.
 즉 cardinality가 어느정도 들은 데이터는 저렇게 key단위로 묶어서 제공할수있고, 그 key의 종류갯수 자체가 chunk사이즈가 될수있다는말
 파티셔너의 grid size나 step의 chunksize는 각각 stepscope를 바탕으로 동적 설정이 가능하므로 알아두자.
+
+
+spring batch의 트랜잭션은=-> chunk단위로 관리된다.
+https://pooney.tistory.com/135
+
+해당 포스트 참조.
