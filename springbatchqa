@@ -1,0 +1,222 @@
+# Spring Batch - Chunk 처리 / Reader / Partitioning 정리
+
+## 1. Writer는 Reader로부터 1개씩 받나, List로 한번에 받나?
+
+**Chunk 단위로 List(Chunk)를 받아서 처리한다.**
+
+동작 흐름:
+1. **Reader**: `read()` 호출마다 아이템 1개씩 반환
+2. **Processor**: `process()` 호출마다 1개씩 가공
+3. 이 과정을 **chunk size만큼 반복**해서 모음
+4. **Writer**: 모인 아이템들을 **한 번에 List(Chunk)로** 받음 (`write()` 1회 호출)
+
+```
+read() → process()
+read() → process()
+... (chunk size만큼 반복)
+write(List<Item>)  ← 한 번에
+commit (트랜잭션 커밋)
+```
+
+전체 1000개, chunk size 10이면 write는 100번 호출됨.
+
+Spring Batch 5.x 시그니처:
+```java
+public interface ItemWriter<T> {
+    void write(Chunk<? extends T> chunk) throws Exception;
+}
+```
+(5.x부터 `List<T>` 대신 `Chunk<T>` 사용, 내부적으론 Iterable)
+
+**Chunk 단위로 묶는 이유**: 트랜잭션 경계 때문. chunk 하나 = 트랜잭션 하나 → 실패 시 해당 chunk만 롤백, 이전 커밋된 chunk는 유지. JDBC batch insert 등으로 묶어 처리하면 성능도 좋음.
+
+---
+
+## 2. JdbcCursorItemReader vs JdbcPagingItemReader 등 Reader 비교
+
+### JdbcCursorItemReader (커서 방식)
+- DB 커넥션 하나를 열어놓고 ResultSet을 커서로 순차 이동
+- 논리적으로 하나의 연속된 스트림
+- 장점: 정렬 보장 잘 됨, 쿼리 1번만 나감
+- 단점: 커넥션을 처리 끝까지 계속 점유, **멀티스레드 처리 불가** (stateful, thread-safe 아님), 배치 도중 데이터 변경 시 이상 동작 가능
+
+### JdbcPagingItemReader (페이징 방식)
+- `SELECT ... LIMIT n OFFSET m` (또는 keyset 방식) 쿼리를 페이지마다 반복 실행
+- 페이지 읽을 때마다 커넥션 열었다 닫음 (점유 시간 짧음)
+- 장점: **멀티스레드/파티셔닝 처리 가능**, 트랜잭션 부담 적음
+- 단점: 쿼리 횟수 증가 (OFFSET 방식은 뒤로 갈수록 느려짐), **정렬 키가 유니크하고 안정적**이어야 페이지 간 데이터 누락/중복 방지
+
+### 리더 종류 비교표
+
+| 리더 | 방식 | 멀티스레드 | 특징 |
+|---|---|---|---|
+| JdbcCursorItemReader | 커서 스트림 | ❌ | 커넥션 1개 계속 점유, 순수 JDBC |
+| JdbcPagingItemReader | 페이지 쿼리 반복 | ✅ | LIMIT/OFFSET or keyset |
+| JpaPagingItemReader | JPA 기반 페이징 | ✅ | JPQL 사용, 영속성 컨텍스트 매 페이지 clear |
+| RepositoryItemReader | Spring Data Repository 기반 | ✅ | Pageable 활용 |
+| ListItemReader / IteratorItemReader | 메모리 컬렉션 | - | 테스트/소량 데이터용 |
+| FlatFileItemReader | 파일 라인 단위 | ✅(파티셔닝시) | CSV/TXT 파싱 |
+
+### 선택 기준
+- Partitioning(genre/area 등) 사용 시 → **Paging 계열 필수** (Cursor는 stateful이라 파티션별 동시 접근 불가)
+- 단일 스레드로 충분하고 정합성 중요 → Cursor가 단순
+- JPA 엔티티 다뤄야 함 → JpaPagingItemReader (영속성 컨텍스트 비대화 주의)
+- OFFSET 큰 값에서 성능 저하 → keyset(no-offset) 방식 커스텀 쿼리 프로바이더로 우회 고려
+
+---
+
+## 3. Partitioning 시 Skip/Retry 카운팅 레벨
+
+**결론: 파티션(worker step)별로 독립적으로 카운팅됨. master로 합산되지 않음.**
+
+```
+masterStep (PartitionStep)
+ ├── workerStep:partition0  ← 독립 StepExecution, skipCount 별도
+ ├── workerStep:partition1  ← 독립 StepExecution, skipCount 별도
+ └── workerStep:partition2  ← 독립 StepExecution, skipCount 별도
+```
+
+- 각 파티션은 완전히 독립된 `StepExecution`
+- `faultTolerant().skipLimit(n)` 설정이 각 파티션 실행에 동일하게 복제되어 적용
+- partition0에서 skip 10번 다 써도, partition1은 무관하게 자기 skipLimit부터 재카운트
+- master step 자체는 아이템을 직접 처리하지 않으므로 skip/retry 카운트가 없음 → 워커들의 상태만 취합
+
+**Tasklet 레벨**: skip/retry 개념 자체가 없음. 이 기능은 chunk-oriented step(`faultTolerant()`)에서만 제공. Tasklet은 예외 발생 시 바로 실패 → 재시도 필요하면 Spring Retry(`@Retryable`)를 직접 구현해야 함.
+
+---
+
+## 4. 실패 전파 구조
+
+```
+partition0 (worker step) → COMPLETED
+partition1 (worker step) → COMPLETED
+partition2 (worker step) → FAILED (skipLimit 초과 등)
+        ↓
+masterStep (PartitionStep) → FAILED  ← 자식 중 하나라도 FAILED면 같이 FAILED
+        ↓
+Job → FAILED
+```
+
+한 파티션이 skipLimit 초과 등으로 실패하면 그 파티션 StepExecution만 FAILED가 되지만, 이게 master step 상태를 FAILED로 만들고 결국 Job 전체를 FAILED로 만듦. (기본 `TaskExecutorPartitionHandler`는 각자 스레드에서 독립 실행 후 결과만 취합하므로 다른 파티션의 실행 자체엔 영향 없음)
+
+---
+
+## 5. Restart(재시작) 시 동작 - 같은 JobInstance 기준
+
+**"실패한 masterStep의, 실패했던(혹은 미실행) 파티션만 골라서, 그 파티션이 멈췄던 지점부터 재실행"**
+
+```
+Job (동일 JobInstance, 동일 identifying JobParameters)
+ └── masterStep (FAILED)
+      ├── partition0 → COMPLETED → 재실행 안 함 (skip)
+      ├── partition1 → COMPLETED → 재실행 안 함 (skip)
+      └── partition2 → FAILED → 여기서부터 재실행
+                                  ├── 저장된 minValue/maxValue 그대로 복원
+                                  └── 저장된 reader 위치(마지막 처리 지점)부터 이어서 처리
+```
+
+partition2가 재실행되어 성공하면 masterStep 전체가 COMPLETED로 바뀌고, Job Flow 상 masterStep 뒤에 이어지는 다른 step들도 실행됨.
+
+```
+Job: [masterStep(partition)] → [step2] → [step3]
+
+최초 실행: partition2 FAILED → Job FAILED (step2, step3은 실행 안 됨)
+
+Restart: masterStep 재실행 (partition0,1 스킵 / partition2만 재실행)
+         → masterStep COMPLETED → step2 실행 → step3 실행 → Job COMPLETED
+```
+
+이 판단은 `JobRepository`의 `BATCH_STEP_EXECUTION`, `BATCH_STEP_EXECUTION_CONTEXT` 테이블에 기록된 상태를 기준으로 Spring Batch가 자동 수행.
+
+### 재시작 단위 3중 구조
+1. **Step 레벨**: COMPLETED step은 스킵, FAILED step만 재실행
+2. **Partition 레벨**: 그 안에서도 COMPLETED 파티션은 스킵, FAILED 파티션만 재실행
+3. **Chunk/Reader 레벨**: 재실행되는 파티션 내부에서도 처음부터 안 읽고, 마지막 커밋된 chunk 이후 지점부터 이어서 읽음 (단, `saveState=true`일 때만)
+
+---
+
+## 6. Partitioner는 Restart 시 다시 호출되지 않음
+
+**최초 실행** 시 Partitioner가 범위를 나눠서 각 파티션의 `ExecutionContext`에 저장:
+
+```java
+@Override
+public Map<String, ExecutionContext> partition(int gridSize) {
+    Map<String, ExecutionContext> result = new HashMap<>();
+    long min = 1, max = 4_000_000; // 예: member 테이블 min/max id
+    long range = (max - min) / gridSize;
+
+    for (int i = 0; i < gridSize; i++) {
+        ExecutionContext context = new ExecutionContext();
+        long minId = min + (i * range);
+        long maxId = (i == gridSize - 1) ? max : minId + range - 1;
+
+        context.putLong("minValue", minId);
+        context.putLong("maxValue", maxId);
+        result.put("partition" + i, context);
+    }
+    return result;
+}
+```
+
+이 `ExecutionContext`는 `BATCH_STEP_EXECUTION_CONTEXT` 테이블에 영구 저장됨.
+
+**Restart 시**:
+- `SimpleStepExecutionSplitter`가 "이 JobInstance + 이 step 이름으로 이전에 실행된 파티션들이 있는가?"를 먼저 확인
+- 있으면 **Partitioner를 재호출하지 않고**, DB에 저장된 기존 StepExecution들을 그대로 사용
+- COMPLETED는 제외, FAILED(혹은 미실행) 파티션만 재실행 대상으로 반환
+
+→ partition2가 minId=3,000,001~maxId=4,000,000 범위로 실패했다면, restart해도 **정확히 그 범위 그대로** 재실행됨. 그 사이 member 테이블에 데이터가 더 늘어나도 무관 (새로 늘어난 데이터는 무시).
+
+### 주의: Restart가 아니라 "새 JobInstance"로 도는 경우
+매 실행마다 range를 새로 계산하는 Partitioner 설계 자체의 특성 때문에, identifying JobParameters가 실행마다 달라지면(예: `LocalDateTime.now()`를 identifying parameter로 사용) 매번 새 JobInstance로 취급되어 Partitioner가 처음부터 다시 호출되고 파티션 경계도 새로 계산됨. 이건 정상 신규 실행이라면 문제없지만, "재시작인 줄 알았는데 실수로 새 JobInstance가 생성돼 처음부터 다시 도는" 상황을 주의해야 함.
+
+**대응**:
+- 동일 JobInstance로 재시작하려면 identifying parameter를 고정하고, 재실행용 timestamp 등은 `.addLong("run.id", ..., false)`처럼 **non-identifying**으로 넣기
+- Partitioner가 매번 DB에서 현재 min/max를 동적으로 계산하는 방식이면, 최초 계산한 min/max를 Job 레벨 ExecutionContext나 별도 테이블에 고정해두는 게 안전
+
+---
+
+## 7. saveState 옵션 - Reader의 위치 저장 여부
+
+**"Chunk/Reader 레벨에서 이어서 읽기"는 `saveState=true`일 때만 동작한다.**
+
+`ItemStreamSupport`를 상속하는 리더(`JdbcPagingItemReader`, `JdbcCursorItemReader`, `FlatFileItemReader`, `JpaPagingItemReader` 등)는 `ItemStream` 인터페이스 구현:
+
+```java
+public interface ItemStream {
+    void open(ExecutionContext executionContext);
+    void update(ExecutionContext executionContext);  // 현재 위치 저장
+    void close();
+}
+```
+
+- **`saveState=true` (기본값)**: 매 chunk 커밋 시점마다 `update()` 호출 → 현재 읽기 위치(마지막 offset, 마지막 키값 등)를 해당 파티션의 ExecutionContext에 기록 → `BATCH_STEP_EXECUTION_CONTEXT`에 영구 저장
+- **`saveState=false`**: `update()`가 아무것도 안 함 → 위치 정보 미기록 → **재시작 시 무조건 처음부터(파티션 경계의 minValue부터) 다시 읽음**
+
+### saveState=false로 두는 경우
+- 여러 스레드가 리더를 공유하는 상황 (`SynchronizedItemStreamReader`로 감싸기 전 — 상태 저장이 thread-safe 하지 않아서)
+- 멱등성이 보장돼서 처음부터 다시 읽어도 무관한 경우 (UPSERT 등)
+- 정확한 위치 추적보다 단순함을 우선할 때
+
+### 설정 방법
+```java
+new JdbcPagingItemReaderBuilder<Member>()
+    .saveState(true) // 기본값 true, 명시적으로 설정 가능
+    ...
+```
+
+---
+
+## 정리 요약표
+
+| 항목 | 레벨/동작 |
+|---|---|
+| Writer 처리 단위 | Chunk(List) 단위, chunk size만큼 모아서 한 번에 write |
+| Skip/Retry 카운트 | 파티션(worker step)별 독립, master는 취합만 |
+| 파티션 실패 영향 범위 | 다른 파티션에 영향 없음 (독립 실행) |
+| 파티션 실패 → 상위 전파 | 자식 파티션 FAILED → masterStep FAILED → Job FAILED |
+| Restart 시 재실행 단위 | Step 레벨 → Partition 레벨 → Chunk/Reader 레벨 순으로 필터링 |
+| Restart 시 Partitioner | 재호출 안 됨, 기존 ExecutionContext(min/max) 그대로 복원 |
+| Reader 이어읽기 조건 | `saveState=true`일 때만 동작 (기본값 true) |
+| 재시작 전제조건 | 동일 JobInstance (identifying JobParameters 고정 필요) |
