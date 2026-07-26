@@ -220,3 +220,26 @@ new JdbcPagingItemReaderBuilder<Member>()
 | Restart 시 Partitioner | 재호출 안 됨, 기존 ExecutionContext(min/max) 그대로 복원 |
 | Reader 이어읽기 조건 | `saveState=true`일 때만 동작 (기본값 true) |
 | 재시작 전제조건 | 동일 JobInstance (identifying JobParameters 고정 필요) |
+
+
+
+https://www.inflearn.com/community/questions/1556112/jobexecution%EA%B3%BC-jobexecutioncontext%EC%99%80%EC%9D%98-%EA%B4%80%EA%B3%84?srsltid=AfmBOooY5UKGDjJDnfwDQfkzPekyl0UvO7tt4qb0LnY6MzORNEJ2LMDr
+배치를 재실행시에 각 step,job에 부여된 context가 어찌 처리되는가에 대한내용.
+간단하게 말해서 batch의 step,job레벨의 각 context는 저장되고 나중에 재활용될수있다.
+즉 파티셔닝 레벨에서 스탭에 부여하던값이 파티셔닝단계를 거치지않고 db레벨에 저장된것을 가져다쓴다이말.
+
+
+1. JOB_NAME + identifying JobParameters로 JOB_KEY 계산
+2. BATCH_JOB_INSTANCE에서 JOB_NAME + JOB_KEY로 기존 row 조회
+   
+   ├─ 없으면 → 새 JobInstance 생성 (완전히 새로운 실행 계보 시작)
+   │
+   └─ 있으면 → 기존 JobInstance 재사용
+              ├─ 그 JobInstance의 마지막 JobExecution이 COMPLETED면
+              │      → JobInstanceAlreadyCompleteException 던짐 (재실행 거부)
+              │
+              └─ 마지막 JobExecution이 FAILED/STOPPED면
+                     → 재시작으로 인식, 같은 JobInstance 아래 새 JobExecution 생성
+                     → 이전 JobExecution의 ExecutionContext 등을 이어받아 진행
+
+대충 이런꼴임. 즉  기존의 step,job execution을 계승 받아서 사용한다이말이다.
